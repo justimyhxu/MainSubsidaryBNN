@@ -13,3 +13,7 @@ If you use our code/model/data, please cite our paper:
   year={2018}
 }
 ```
+
+## Usage
+#### File Structure
+#### How-To-Run
