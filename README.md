@@ -2,7 +2,7 @@
 This repository is for the paper 'A Main Subsidiary Network Framework For Simplifying Binary Neural Network' (To appear in CVPR 2019) with Pytorch v0.40+.
 
 ## Introduction
-
+ToDo
 ## Citation
 If you use our code/model/data, please cite our paper:
 ```
@@ -19,12 +19,13 @@ If you use our code/model/data, please cite our paper:
 ```
 root
 |_ cuda
-  |_ binactive_cuda.cpp
-  |_ binactive_cuda_kernel.cu
-|_ data.py
-|_ maskoperator.py
-|_ maskresnet.py
-|_ train.py
-|_ util.py
+  |_ binactive_cuda.cpp         #ToDo
+  |_ binactive_cuda_kernel.cu   #ToDo
+|_ data.py     #ToDo
+|_ maskoperator.py   #ToDo
+|_ maskresnet.py     #ToDo
+|_ train.py        #ToDo
+|_ util.py         #ToDo
 ```
 #### How-To-Run
+ToDo
