@@ -16,4 +16,15 @@ If you use our code/model/data, please cite our paper:
 
 ## Usage
 #### File Structure
+```
+root
+|_ cuda
+  |_ binactive_cuda.cpp
+  |_ binactive_cuda_kernel.cu
+|_ data.py
+|_ maskoperator.py
+|_ maskresnet.py
+|_ train.py
+|_ util.py
+```
 #### How-To-Run
