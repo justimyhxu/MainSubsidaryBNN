@@ -1,434 +1,260 @@
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import sys
-import gc
 import os
-cwd = os.getcwd()
-sys.path.append(cwd+'/../networks/')
-import torch
-import time
-import datetime
 import socket
-import copy
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-from torchvision import datasets, transforms
-from torch.autograd import Variable
-import sys
-from data import build_train_dataset, build_test_dataset 
-import util
-import numpy as np
 import argparse
-import shutil
 from datetime import datetime
-import torch.nn.parallel
-import torch.backends.cudnn as cudnn
-import torch.distributed as dist
-import torch.optim
 
-from maskresnet import resnet, BinActive
-import maskresnet
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torchvision
+from torchvision import transforms
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--cpu', action='store_true',
-	help='set if only CPU is available')
-parser.add_argument('--data', action='store', default='../lmdb_imagenet',
-	help='dataset path')
-parser.add_argument('--arch', action='store', default='resnet',
-	help='the architecture for the network: nin')
-parser.add_argument('--lr', action='store', type=float, default=0.001,
-	help='the intial learning rate')
-parser.add_argument('--epochs', action='store', default='5',
-	help='fisrt train epochs',type=float)
-parser.add_argument('--retrain_epochs', action='store', default='5',
-	help='re-train epochs',type=int)
-parser.add_argument('--print_freq', action='store', default=10,
-	help='re-train epochs',type=int)
-parser.add_argument('--save_name', action='store', default='first_model',
-	help='save the first trained model',type=str)
-parser.add_argument('--load_name', action='store', default='first_model',
-	help='load pretrained model',type=str)
-parser.add_argument('--root_dir', action='store', default='./model_resnet_beta_final/',
-	help='root dir for different experiments',type=str)
-parser.add_argument('--pretrained', action='store', default=None,
-	help='the path to the pretrained model')
-parser.add_argument('--evaluate', action='store_true',
-	help='evaluate the model')
-parser.add_argument('--resume', type=str, default='../model.tar',
-	help='resume the model from checkpoint')
-parser.add_argument('--partpal', 
-                    default=0, type=int, help='parallel mode')
-
-###>> Train Mask
-parser.add_argument('--finetune_weight',type=bool,default=False)
-parser.add_argument('--alpha',action='store',type=float, default=1e-8,
-	help='regularization loss')
-parser.add_argument('--initialnum',action='store',default=None)
-parser.add_argument('--decay',type=float,default=1)
-parser.add_argument('--direction',type=bool,default=False)
-###>>
-
-args = parser.parse_args()
-print('==> Options:',args)
-print(args.direction)
-
-best_prec1 = 0
-train_dataset_size = 1281167
-test_dataset_size = 50000
-class_size = 1000
-
-# set the seed
-torch.manual_seed(1)
-torch.cuda.manual_seed(1)
+from tensorboardX import SummaryWriter
+from model import NIN
+from model import MaskBinActiveConv2d
+import util
 
 
-############check################
-def ifornot_dir(directory):
-##please give current dir
-	import os
-	if not os.path.exists(directory):
-		os.makedirs(directory)
 
-ifornot_dir(args.root_dir)
+def save_state(model, acc, idx=-1):
+    print('==> Saving model ...')
+    state = {
+        'acc': acc,
+        'state_dict': model.state_dict(),
+    }
+    for key in state['state_dict'].keys():
+        if 'module' in key:
+            state['state_dict'][key.replace('module.', '')] = \
+                state['state_dict'].pop(key)
+    torch.save(state, 'modulesresidual/nin_finetune_weight_{:}.pth.tar'.format('best' if idx == -1 else str(idx)))
 
-###########Data Augmentation#####
-transform_train = transforms.Compose([
-    transforms.RandomCrop(32, padding=4),
-    transforms.RandomHorizontalFlip(),
-    transforms.ToTensor(),
-    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-])
 
-transform_test = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-])
+def train(epoch, model):
+    global l1_loss
+    model.train()
+    sumloss = 0
 
-trainset = torchvision.datasets.CIFAR10(root='/data',
-                                        train=True, 
-                                        download=False, 
-                                        transform=transform_train)
+    mask_lists = []
+    for m in model.modules():
+        if isinstance(m, MaskBinActiveConv2d):
+            mask_lists.append(m.mask)
 
-trainloader = torch.utils.data.DataLoader(trainset, batch_size=256, shuffle=True, num_workers=2)
+    for batch_idx, (data, target) in enumerate(trainloader):
+        # process the weights including binarization
+        bin_op.binarization()
 
-testset = torchvision.datasets.CIFAR10(root='/data', 
-                                       train=False,
-                                       download=False, 
-                                       transform=transform_test)
+        # forwarding
+        data, target = data.cuda(), target.cuda()
+        optimizer.zero_grad()
+        output = model(data)
 
-testloader = torch.utils.data.DataLoader(testset, batch_size=256, shuffle=False, num_workers=2)
+        # backwarding
+        alpha = 1e-6
+        loss = criterion(output, target) + alpha * sum(list(map(lambda x: torch.norm(x.abs(), 1), mask_lists)))
+        loss.backward()
+        sumloss = sumloss + loss.data[0]
 
-class AverageMeter(object):
-	def __init__(self):
-		self.reset()
+        # restore weights
+        bin_op.restore()
+        bin_op.updateBinaryGradWeight()
 
-	def reset(self):
-		self.val = 0
-		self.avg = 0
-		self.sum = 0
-		self.count = 0
+        optimizer.step()
+        if batch_idx % 100 == 0:
+            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tLR: {}'.format(
+                epoch, batch_idx * len(data), len(trainloader.dataset),
+                       100. * batch_idx / len(trainloader), loss.data[0],
+                optimizer.param_groups[0]['lr']))
 
-	def update(self, val, n=1):
-		self.val = val
-		self.sum += val * n
-		self.count += n
-		self.avg = self.sum / self.count
+    writer.add_scalar('train_loss', sumloss / len(trainloader), epoch)
+    return
+
+
+def test(epoch, model):
+    global best_acc
+    model.eval()
+    test_loss = 0
+    correct = 0
+    bin_op.binarization()
+    for data, target in testloader:
+        data, target = data.cuda(), target.cuda()
+
+        output = model(data)
+        test_loss += criterion(output, target).data[0]
+        pred = output.data.max(1, keepdim=True)[1]
+        correct += pred.eq(target.data.view_as(pred)).cpu().sum()
+    bin_op.restore()
+    acc = 100. * correct / len(testloader.dataset)
+
+    if acc > best_acc:
+        best_acc = acc
+        save_state(model, best_acc)
+    if epoch % 5 == 0:
+        save_state(model, best_acc, epoch)
+
+    test_loss /= len(testloader.dataset)
+    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.2f}%)'.format(
+        test_loss * 128., correct, len(testloader.dataset),
+        100. * correct / len(testloader.dataset)))
+    print('Best Accuracy: {:.2f}%\n'.format(best_acc))
+    writer.add_scalar('vali_acc', acc, epoch)
+    return
+
 
 def adjust_learning_rate(optimizer, epoch):
-	lr = float(args.lr) * (0.1 ** int(epoch / 2))
-	print('Learning rate:', lr)
-	for param_group in optimizer.param_groups:
-		param_group['lr'] = lr
-
-def accuracy(output, target, topk=(1,)):
-	maxk = max(topk)
-	batch_size = target.size(0)
-
-	_, pred = output.topk(maxk, 1, True, True)
-	pred = pred.t()
-	correct = pred.eq(target.view(1, -1).expand_as(pred))
-
-	res = []
-	for k in topk:
-		correct_k = correct[:k].view(-1).float().sum(0, keepdim=True)
-		res.append(correct_k.mul_(100.0 / batch_size))
-	return res
-
-def save_state(state, is_best, save_name, root_dir):
-	print('==> Saving model ...')
-	torch.save(state, root_dir + '/' + save_name+'.pth.tar')
-	if is_best:
-		shutil.copyfile(filename, root_dir+save_name+'_best.pth.tar')
-
-def train(epoch, sample_weights=torch.Tensor(np.ones((50000,1))/50000.0)):
-	batch_time = AverageMeter()
-	data_time = AverageMeter()
-	losses = AverageMeter()
-	top1 = AverageMeter()
-	top5 = AverageMeter()
-
-	###>>
-	alpha = args.alpha if not args.finetune_weight else 0 
-	###>>
-
-	# switch to train mode
-	model.train()
-
-	end = time.clock()
-
-	trainloader = build_train_dataset('sample_batch', sample_weights)
-	
-	#print('==> Starting one epoch ...')
-	for batch_idx, (data, target, _) in enumerate(trainloader):
-		data_time.update(time.clock() - end)
-		bin_op.binarization()
-		data, target = Variable(data.cuda()), Variable(target.cuda())
-		optimizer.zero_grad()
-		output = model(data)
-		# backwarding
-		loss = criterion(output, target)
-		prec1, prec5 = accuracy(output.data, target.data, topk=(1, 5))
-		
-		top1.update(prec1[0], data.size(0))
-		top5.update(prec5[0], data.size(0))
-		
-		if not args.finetune_weight:
-			count,regloss,mask_lists = 0,0,[]
-			for m in model.modules():
-				if isinstance(m, maskresnet.BinConv2d):
-					if m.mask.requires_grad == True:
-						filtermask = BinActive()(m.mask)
-						mask_lists.append(filtermask)
-					count += 1
-			direction = 1 if args.direction else 0
-			regloss = sum(list(map(lambda x: torch.norm(x+direction,1),mask_lists)))
-		else:
-			regloss = torch.Tensor([0]).cuda()
-		loss = loss + alpha*regloss 
-
-		losses.update(loss.data[0], data.size(0))
-
-		loss.backward()
-		# restore weights
-		bin_op.restore()
-		bin_op.updateBinaryGradWeight()
-		optimizer.step()
-
-		# measure elapsed time
-		batch_time.update(time.clock() - end)
-		end = time.clock()
-
-		all_batch_idx = (epoch-1) * len(trainloader) + batch_idx
-		if batch_idx % args.print_freq == 0:
-			print('Epoch: [{0}][{1}/{2}]\t'
-			'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-			'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
-			'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-			'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
-			'Prec@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
-			epoch, batch_idx, len(trainloader), batch_time=batch_time,
-			data_time=data_time, loss=losses, top1=top1, top5=top5))
-		if epoch <= 10:
-			if batch_idx % (args.print_freq * 50) == 0 and batch_idx != 0:
-				eval_info = eval_test()
-				save_state({
-						'arch': args.arch,
-						'state_dict': model.state_dict(),
-						'best_prec1': best_prec1,
-						'optimizer' : optimizer.state_dict(),
-					}, False, 'sample_test_{:}'.format((epoch - 1) * 5 + (batch_idx / (args.print_freq * 50))), checkpointdir)
-				get_prun_number((epoch - 1) * 5 + (batch_idx / (args.print_freq * 50)))
-	
-	gc.collect()
-	return trainloader
-
-def test(save_name, best_prec1, testloader_in, epoch):
-
-	#global best_acc
-
-	model.eval()
-	test_loss = 0
-	correct = 0
-	bin_op.binarization()
-
-	for i, (data, target) in enumerate(testloader_in):
-		data, target = Variable(data.cuda(), volatile=True), Variable(target.cuda(), volatile=True)                         
-		output = model(data)
-		test_loss += criterion(output, target).data[0]
-		pred = output.data.max(1, keepdim=True)[1]
-		correct += pred.eq(target.data.view_as(pred)).cpu().sum()
-	bin_op.restore()
-	acc = 100. * correct.item() / len(testloader_in.dataset)
-	test_loss /= len(testloader_in.dataset)
-	print('\nTrain set: Average loss: {:.4f}, Accuracy: {}/{} ({:.2f}%)'.format(
-		test_loss * 1000, correct.item(), len(testloader_in.dataset),
-		100. * correct.item() / len(testloader_in.dataset)))
-	
-	if acc > best_prec1:
-		save_state({
-		'arch': args.arch,
-		'state_dict': model.state_dict(),
-		'best_prec1': best_prec1,
-		'optimizer' : optimizer.state_dict(),
-		}, False, 'best', checkpointdir)
-
-	save_state({
-		'arch': args.arch,
-		'state_dict': model.state_dict(),
-		'best_prec1': best_prec1,
-		'optimizer' : optimizer.state_dict(),
-		}, False, 'vaild_{:}'.format(epoch), checkpointdir)
-
-	writer.add_scalar('vali_acc_top1/valid_top1', acc, epoch )
-	writer.add_scalar('vali_acc_loss/valid_loss', test_loss, epoch )
-
-	best_prec1 = max(acc, best_prec1)
-	return best_prec1
-
-def get_prun_number(epoch):
-    count = 0#,prun_num = 0,0
-    for m in model.modules():
-        prun_num = 0
-        if isinstance(m,maskresnet.BinConv2d):
-            if count == int(args.initialnum):
-                prun_num += BinActive()(m.mask).eq(-1).sum()
-            writer.add_scalar('prun_num/' + str(count), prun_num, epoch)
-            count += 1
-
-def eval_test():
-
-	model.eval()
-	test_loss = 0
-	correct = 0
-	bin_op.binarization()
-
-	testloader = build_test_dataset()
-	for i, (data, target) in enumerate(testloader):
-		data, target = Variable(data.cuda(), volatile=True), Variable(target.cuda(), volatile=True)                         
-		output = model(data)
-		test_loss += criterion(output, target).data[0]
-		pred = output.data.max(1, keepdim=True)[1]
-		correct += pred.eq(target.data.view_as(pred)).cpu().sum()
-	bin_op.restore()
-	acc = 100. * correct.item() / len(testloader.dataset)
-	test_loss /= len(testloader.dataset)
-	print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.2f}%)'.format(
-		test_loss * 1000, correct.item(), len(testloader.dataset),
-		100. * correct.item() / len(testloader.dataset)))
-
-	return acc, test_loss
+    # update_list = [120, 200, 240, 280]
+    decay_rate = 1000 ** (-epoch / args.epochs)
+    lr = args.lr * (decay_rate)
+    print('Learning rate:', lr)
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+    return lr
 
 
-def reset_learning_rate(optimizer, lr=0.001):
-	for param_group in optimizer.param_groups:
-		param_group['lr'] = lr
-	return
-
-# define the model
-
-def model_components():
-	print('==> building model',args.arch,'...')
-	if args.arch == 'resnet':
-		model = resnet('ResNet_imagenet', pretrained=args.pretrained, num_classes=1000, depth=18, dataset='imagenet')
-	else:
-		raise Exception(args.arch+' is currently not supported')
-
-	
-	#load model
-	if args.resume:
-		if os.path.isfile(args.resume):
-			print("=> loading checkpoint '{}'".format(args.resume))
-			checkpoint = torch.load(args.resume)
-			new_state_dict = checkpoint['state_dict']
-			for k in list(new_state_dict.keys()):
-			    if 'weight'  in k:
-			        new_state_dict[k.replace('conv.weight','weight')] = new_state_dict.pop(k)
-			    if 'bias' in k:
-			        new_state_dict[k.replace('conv.bias','bias')] = new_state_dict.pop(k)
-			#jown_state = model.state_dict()
-			own_state = model.state_dict()
-			for name, param in own_state.items():
-				if name in new_state_dict:
-					own_state[name].copy_(new_state_dict[name])
-				else:
-					print(name)
-			del checkpoint
-		else:
-			raise Exception(args.resume+' is found.')
-	else:
-		print('==> Initializing model parameters ...')
-		for m in model.modules():
-			if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
-				c = float(m.weight.data[0].nelement())
-				m.weight.data.normal_(0, 1./c)
-				m.bias.data.zero_()
-			elif isinstance(m, nn.BatchNorm2d):
-				if m.weight is not None:
-					m.weight.data = m.weight.data.zero_().add(1.0)
-
-	#data parallel
-	if args.partpal==1:
-		model.features = torch.nn.DataParallel(model.features)
-		model.cuda()
-	else:
-		model = torch.nn.DataParallel(model).cuda()
-	cudnn.benchmark = True
-
-	# define solver and criterio
-	optimizer = optim.Adam(filter(lambda para:para.requires_grad,model.parameters()), lr=args.lr, weight_decay=0.000001)
-
-	criterion = nn.CrossEntropyLoss().cuda()
-	criterion_seperated = nn.CrossEntropyLoss(reduce=False).cuda()
-	# define the binarization operator
-	bin_op = util.BinOp(model, 'FL_Full', True if args.finetune_weight else False)
-	print('bin_op',len(bin_op.target_modules))
-	return model, optimizer, criterion, criterion_seperated, bin_op
-
-def generate_mask():
-	count = 0
-	state_list = []
-	for m in model.modules():
-		if isinstance(m,maskresnet.BinConv2d):
-			if count == int(args.initialnum):
-				m.binact = True
-			state_list.append(str(int(m.binact)))
-			count += 1
- 
-
-def get_grad_state():
-    if str(args.initialnum):
-        if not args.finetune_weight:
-            for name,para in model.named_parameters():
-                para.requires_grad = False
-            count = 0
-            for module in model.modules():
-                if isinstance(module,maskresnet.BinConv2d):
-                    if count == int(args.initialnum):
-                        module.mask.requires_grad = True 
-                    count += 1 
-    else:
-        for name,para in model.named_parameter():
-            if 'mask' in name:
-                para.requires_grad=False 
 
 
 if __name__ == '__main__':
-        #test
-    model, optimizer, criterion, criterion_seperated, bin_op = model_components()
+    # prepare the options
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--cpu', action='store_true',
+                        help='set if only CPU is available')
+    parser.add_argument('--data', action='store', default='./data',
+                        help='dataset path')
+    parser.add_argument('--arch', action='store', default='nin',
+                        help='the architecture for the network: nin')
+    parser.add_argument('--pretrained', action='store', default=None,
+                        help='the path to the pretrained model')
+    parser.add_argument('--lr', type=float, default=0.001, metavar='LR',
+                        help='learning rate (default: 10e-4)')
+    parser.add_argument('--evaluate', action='store_true',
+                        help='evaluate the model')
+    parser.add_argument('--epochs', type=int, default=500, metavar='N',
+                        help='number of epochs to train (default: 200)')
+    parser.add_argument('--VGG', action='store', default='VGG11',
+                        help='the architecture for the network: VGG')
+    parser.add_argument('--Device', type=int, default=0,
+                        help='Device for cuda')
+    parser.add_argument('--act', action='store', default='active')
+    parser.add_argument('--finetune_weight', type=bool, default=False)
+    parser.add_argument('--initialnum', action='store', default=None)
 
-    train_batch_size = 1000
-    test_batch_size = 1000
-    total_classes = 1000
-    best_acc = 0
+    args = parser.parse_args()
+    print('==> Options:', args)
+
+    # set the seed
+    torch.manual_seed(1)
+    torch.cuda.manual_seed(1)
+
+    torch.cuda.set_device(args.Device)
+    # prepare the data
+    if not os.path.isfile(args.data + '/train_data'):
+        raise Exception('Please assign the correct data path with --data <DATA_PATH>')
+
+    transform_train = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    ])
+
+    transform_test = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    ])
+
+    trainset = torchvision.datasets.CIFAR10(root=args.data, train=True, download=True, transform=transform_train)
+    trainloader = torch.utils.data.DataLoader(trainset, batch_size=128, shuffle=True, num_workers=0)
+
+    testset = torchvision.datasets.CIFAR10(root=args.data, train=False, download=True, transform=transform_test)
+    testloader = torch.utils.data.DataLoader(testset, batch_size=100, shuffle=False, num_workers=0)
+
+
+    initialstr = '00000000' if not args.initialnum else ''.join(
+        ['1' if str(idx) in args.initialnum else '0' for idx in range(8)])
+    print('====> initial', initialstr)
+
+    # define the model
+
+    model = NIN(binact=initialstr)
+
+    if not args.pretrained:
+        print('==> Initializing model parameters ...')
+        best_acc = 0
+        for m in model.modules():
+            if isinstance(m, nn.Conv2d):
+                m.weight.data.normal_(0, 0.05)
+    else:
+        print('==> Load pretrained model form', args.pretrained, '...')
+        pretrained_model = torch.load(args.pretrained)
+        best_acc = pretrained_model['acc']
+        # best_acc = 0.81*100
+        print(best_acc)
+        new_state_dict = {}
+        for k, v in pretrained_model['state_dict'].items():
+            if 'filtermask' not in k:
+                new_state_dict[k] = v
+        model.load_state_dict(new_state_dict)
+
+    model.cuda()
+
+    count = 0
+
+
+    for para in model.named_parameters():
+        if 'mask' in para[0]:
+            if args.finetune_weight:
+                para[1].requires_grad = False
+            else:
+                if count == int(args.initialnum[-1]):
+                    para[1].requires_grad = True
+                else:
+                    para[1].requires_grad = False
+                count = count + 1
+        if 'mask' not in para[0]:
+            if args.finetune_weight:
+                para[1].requires_grad = True
+            else:
+                para[1].requires_grad = False
+
+    # if args.initialnum:
+    #     for name,para in model.named_parameters():
+    #         para.requires_grad = False
+    #     for module in model.modules():
+    #         if isinstance(module, MaskBinActiveConv2d) and module.binact:
+    #             module.mask.requires_grad = True
+
+    for name, para in model.named_parameters():
+        print(name, para.requires_grad)
+
+    optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr, weight_decay=0.00001)
+    criterion = nn.CrossEntropyLoss()
+
+    # define the binarization operator
+    bin_op = util.BinOp(model, True if args.finetune_weight else False)
+
+    print(len(bin_op.target_modules))
+
+    # start training
+    global writer, name_rec
+    name_rec = 'Resnet_Bin_initial_weight' if not args.initialnum else 'Resnet_Bin_fintune_{:}_{:}_lr_{:}'.format(
+        'weight' if args.finetune_weight else 'mask', args.initialnum, args.lr)
+    print(name_rec)
 
     current_time = datetime.now().strftime('%b%d_%H-%M-%S')
-    generate_mask()
-    get_grad_state()
+    logdir = os.path.join('runs', current_time + '_' + socket.gethostname())
+    writer = SummaryWriter(logdir + name_rec)
 
-    for epoch in range(1, int(args.epochs)+1):
-        train(epoch)
-        best_acc = test(args.save_name, best_acc, build_test_dataset(), epoch)
+    test(0)
+    for epoch in range(1, args.epochs + 1):
+        tlr = adjust_learning_rate(optimizer, epoch)
+        writer.add_scalar('learning_rate', tlr, epoch)
+        train(epoch, model)
+
+        if args.initialnum :
+            prun_num = 0
+            for m in model.modules():
+                if isinstance(m, MaskBinActiveConv2d) and m.binact==True:
+                    prun_num += m.filtermask.eq(-1).sum().item()
+            writer.add_scalar('prunum', prun_num, epoch)
+
+        test(epoch, model)

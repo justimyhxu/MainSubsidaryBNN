@@ -1,31 +1,40 @@
 import torch.nn as nn
 import numpy
+import mask
+from model import MaskBinActiveConv2d
 
 class BinOp():
-    def __init__(self, model):
+    def __init__(self, model, finetune_weight):
         # count the number of Conv2d
         count_Conv2d = 0
+
+        self.finetune_weight = finetune_weight
         for m in model.modules():
-            if isinstance(m, nn.Conv2d):
+            # if  or isinstance(m,nin.MaskConv2d) or isinstance(m,nin.MaskPreConv2d) or isinstance(m,nin.MaskBinActiveConv2d) or isinstance(m,mask.MaskBinActiveConv2d) :
+            if isinstance(m, nn.Conv2d) or isinstance(m, MaskBinActiveConv2d) :
                 count_Conv2d = count_Conv2d + 1
 
         start_range = 1
-        end_range = count_Conv2d-2
+        end_range = count_Conv2d - 2
         self.bin_range = numpy.linspace(start_range,
-                end_range, end_range-start_range+1)\
-                        .astype('int').tolist()
+                                        end_range, end_range - start_range + 1) \
+            .astype('int').tolist()
         self.num_of_params = len(self.bin_range)
         self.saved_params = []
         self.target_params = []
         self.target_modules = []
+        self.target_masks = []
         index = -1
+
         for m in model.modules():
-            if isinstance(m, nn.Conv2d):
+            # if isinstance(m, nn.Conv2d) or isinstance(m,nin.MaskConv2d) or isinstance(m,nin.MaskPreConv2d) or isinstance(m,nin.MaskBinActiveConv2d) or isinstance(m,mask.MaskBinActiveConv2d) :
+            if isinstance(m, nn.Conv2d) or isinstance(m, MaskBinActiveConv2d):
                 index = index + 1
                 if index in self.bin_range:
                     tmp = m.weight.data.clone()
                     self.saved_params.append(tmp)
                     self.target_modules.append(m.weight)
+                    # self.target_masks.append(m.mask)
 
     def binarization(self):
         self.meancenterConvParams()
@@ -36,14 +45,13 @@ class BinOp():
     def meancenterConvParams(self):
         for index in range(self.num_of_params):
             s = self.target_modules[index].data.size()
-            negMean = self.target_modules[index].data.mean(1, keepdim=True).\
-                    mul(-1).expand_as(self.target_modules[index].data)
+            negMean = self.target_modules[index].data.mean(1, keepdim=True). \
+                mul(-1).expand_as(self.target_modules[index].data)
             self.target_modules[index].data = self.target_modules[index].data.add(negMean)
 
     def clampConvParams(self):
         for index in range(self.num_of_params):
-            self.target_modules[index].data.clamp(-1.0, 1.0,
-                    out = self.target_modules[index].data)
+            self.target_modules[index].data = self.target_modules[index].data.clamp(-1.0, 1.0)
 
     def save_params(self):
         for index in range(self.num_of_params):
@@ -53,10 +61,10 @@ class BinOp():
         for index in range(self.num_of_params):
             n = self.target_modules[index].data[0].nelement()
             s = self.target_modules[index].data.size()
-            m = self.target_modules[index].data.norm(1, 3, keepdim=True)\
-                    .sum(2, keepdim=True).sum(1, keepdim=True).div(n)
-            self.target_modules[index].data.sign()\
-                    .mul(m.expand(s), out=self.target_modules[index].data)
+            m = self.target_modules[index].data.norm(1, 3, keepdim=True) \
+                .sum(2, keepdim=True).sum(1, keepdim=True).div(n)
+            self.target_modules[index].data = self.target_modules[index].data.sign() \
+                .mul(m.expand(s), )
 
     def restore(self):
         for index in range(self.num_of_params):
@@ -64,16 +72,20 @@ class BinOp():
 
     def updateBinaryGradWeight(self):
         for index in range(self.num_of_params):
-            weight = self.target_modules[index].data
-            n = weight[0].nelement()
-            s = weight.size()
-            m = weight.norm(1, 3, keepdim=True)\
+            if self.finetune_weight:
+                weight = self.target_modules[index].data
+                n = weight[0].nelement()
+                s = weight.size()
+                m = weight.norm(1, 3, keepdim=True) \
                     .sum(2, keepdim=True).sum(1, keepdim=True).div(n).expand(s)
-            m[weight.lt(-1.0)] = 0 
-            m[weight.gt(1.0)] = 0
-            m = m.mul(self.target_modules[index].grad.data)
-            m_add = weight.sign().mul(self.target_modules[index].grad.data)
-            m_add = m_add.sum(3, keepdim=True)\
+                m[weight.lt(-1.0)] = 0
+                m[weight.gt(1.0)] = 0
+                # m = m.add(1.0/n).mul(1.0-1.0/s[1]).mul(n)
+                # self.target_modules[index].grad.data = \
+                #         self.target_modules[index].grad.data.mul(m)
+                m = m.mul(self.target_modules[index].grad.data)
+                m_add = weight.sign().mul(self.target_modules[index].grad.data)
+                m_add = m_add.sum(3, keepdim=True) \
                     .sum(2, keepdim=True).sum(1, keepdim=True).div(n).expand(s)
-            m_add = m_add.mul(weight.sign())
-            self.target_modules[index].grad.data = m.add(m_add).mul(1.0-1.0/s[1]).mul(n)
+                m_add = m_add.mul(weight.sign())
+                self.target_modules[index].grad.data = m.add(m_add).mul(1.0 - 1.0 / s[1]).mul(n)

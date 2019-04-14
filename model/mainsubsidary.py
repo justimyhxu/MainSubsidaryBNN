@@ -32,25 +32,6 @@ class BinActive(nn.Module):
         return binactive.apply(x)
 
 
-class ApproxSign(torch.autograd.Function):
-    def forward(self, input):
-        self.save_for_backward(input)
-        size = input.size()
-        mean = torch.mean(input.abs(), 1, keepdim=True)
-        input = input.sign()
-        return input, mean
-
-    def backward(self, grad_output, grad_output_mean):
-        input, = self.saved_tensors
-        grad_input = grad_output.clone()
-        grad_input[input.ge(1)] = 0
-        grad_input[input.le(-1)] = 0
-        grad_input[torch.ge(input,-1) & torch.le(input,0)] = 2*input[torch.ge(input,-1) & torch.le(input,0)]+2
-        grad_input[torch.ge(input,0) & torch.le(input,1)] = -2*input[torch.ge(input,0) & torch.le(input,1)]+2
-        #print('grad_in')
-        return grad_input
-
-
 
 class EqualActive(nn.Module):
     def __init__(self):
