@@ -1,2 +1,2 @@
 from .nin import NIN
-from .mainsubsidary import MaskBinActiveConv2d
+from .mainsubsidary import MainSubConv2d

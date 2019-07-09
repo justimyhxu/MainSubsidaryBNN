@@ -1,7 +1,6 @@
 import torch.nn as nn
 import numpy
-import mask
-from model import MaskBinActiveConv2d
+from model import MainSubConv2d
 
 class BinOp():
     def __init__(self, model, finetune_weight):
@@ -10,15 +9,13 @@ class BinOp():
 
         self.finetune_weight = finetune_weight
         for m in model.modules():
-            # if  or isinstance(m,nin.MaskConv2d) or isinstance(m,nin.MaskPreConv2d) or isinstance(m,nin.MaskBinActiveConv2d) or isinstance(m,mask.MaskBinActiveConv2d) :
-            if isinstance(m, nn.Conv2d) or isinstance(m, MaskBinActiveConv2d) :
+            if isinstance(m, nn.Conv2d) or isinstance(m, MainSubConv2d) :
                 count_Conv2d = count_Conv2d + 1
 
         start_range = 1
         end_range = count_Conv2d - 2
         self.bin_range = numpy.linspace(start_range,
-                                        end_range, end_range - start_range + 1) \
-            .astype('int').tolist()
+                                        end_range, end_range - start_range + 1).astype('int').tolist()
         self.num_of_params = len(self.bin_range)
         self.saved_params = []
         self.target_params = []
@@ -27,8 +24,8 @@ class BinOp():
         index = -1
 
         for m in model.modules():
-            # if isinstance(m, nn.Conv2d) or isinstance(m,nin.MaskConv2d) or isinstance(m,nin.MaskPreConv2d) or isinstance(m,nin.MaskBinActiveConv2d) or isinstance(m,mask.MaskBinActiveConv2d) :
-            if isinstance(m, nn.Conv2d) or isinstance(m, MaskBinActiveConv2d):
+            # if isinstance(m, nn.Conv2d) or isinstance(m,nin.MaskConv2d) or isinstance(m,nin.MaskPreConv2d) or isinstance(m,nin.MainSubConv2d) or isinstance(m,mask.MainSubConv2d) :
+            if isinstance(m, nn.Conv2d) or isinstance(m, MainSubConv2d):
                 index = index + 1
                 if index in self.bin_range:
                     tmp = m.weight.data.clone()
@@ -89,3 +86,4 @@ class BinOp():
                     .sum(2, keepdim=True).sum(1, keepdim=True).div(n).expand(s)
                 m_add = m_add.mul(weight.sign())
                 self.target_modules[index].grad.data = m.add(m_add).mul(1.0 - 1.0 / s[1]).mul(n)
+

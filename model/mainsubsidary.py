@@ -1,13 +1,16 @@
+import math
+import os
+
 import torch.nn as nn
 import torch
 import torch.nn.functional as F
-import math
 
 from torch.utils.cpp_extension import load
 
-binactive_cuda = load(
-    'binactive_cuda', ['cuda/binactive_cuda.cpp', 'cuda/binactive_cuda_kernel.cu'], extra_cflags=['-O3'])
+cur_dir_path = os.path.dirname(__file__)
 
+binactive_cuda = load(
+    'binactive_cuda', [os.path.join(cur_dir_path, 'cuda/binactive_cuda.cpp'), os.path.join(cur_dir_path, 'cuda/binactive_cuda_kernel.cu')], extra_cflags=['-O3'])
 
 class binactive(torch.autograd.Function):
     @staticmethod
@@ -23,15 +26,12 @@ class binactive(torch.autograd.Function):
         grad_input = binactive_cuda.backward(grad_input, input)
         return grad_input
 
-
 class BinActive(nn.Module):
     def __init__(self):
         super(BinActive, self).__init__()
 
     def forward(self, x):
         return binactive.apply(x)
-
-
 
 class EqualActive(nn.Module):
     def __init__(self):
@@ -41,11 +41,11 @@ class EqualActive(nn.Module):
         return output
     
     
-class MaskBinActiveConv2d(nn.Module):
+class MainSubConv2d(nn.Module):
     def __init__(self, input_channels, output_channels,
-                 kernel_size=-1, stride=-1, padding=0, dropout=0, bias = None, binact=False):
-        super(MaskBinActiveConv2d, self).__init__()
-        self.layer_type = 'MaskBinActiveConv2d'
+                 kernel_size=-1, stride=-1, padding=0, dropout=0, bias = None, main_or_sub=False):
+        super(MainSubConv2d, self).__init__()
+        self.layer_type = 'MainSubConv2d'
         self.kernel_size = kernel_size
         self.stride = stride
         self.padding = padding
@@ -63,7 +63,7 @@ class MaskBinActiveConv2d(nn.Module):
             self.dropout = nn.Dropout(dropout)
         
         self.mask = torch.nn.Parameter(torch.ones(self.weight.size(0),1,1,1),requires_grad=True)
-        self.binact = binact
+        self.main_or_sub = main_or_sub
         self.reset_parameters()
       
         
@@ -82,7 +82,7 @@ class MaskBinActiveConv2d(nn.Module):
         x = BinActive()(x)
         if self.dropout_ratio != 0:
             x = self.dropout(x) 
-        if self.binact:
+        if not self.main_or_sub:
             self.filtermask = BinActive()(self.mask)
             self.filtermask = (self.filtermask - 1)/2
         else:
