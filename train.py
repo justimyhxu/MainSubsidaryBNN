@@ -34,6 +34,7 @@ parser.add_argument('--Device', type=int, default=0,
 parser.add_argument('--act', action='store', default='active')
 parser.add_argument('--main', action='store_true')
 parser.add_argument('--layer', type=str, default=None)
+parser.add_argument('--alpha', type=float,default=1e-8)
 
 args = parser.parse_args()
 print('==> Options:', args)
@@ -73,8 +74,7 @@ def train(epoch, model):
         output = model(data)
 
         # backwarding
-        alpha = 1e-6
-        loss = criterion(output, target) + alpha * sum(list(map(lambda x: torch.norm(x.abs(), 1), mask_lists)))
+        loss = criterion(output, target) + args.alpha * sum(list(map(lambda x: torch.norm(x.abs(), 0), mask_lists)))
         loss.backward()
         sumloss = sumloss + loss.item()
 
@@ -107,7 +107,8 @@ def test(epoch, model):
         pred = output.data.max(1, keepdim=True)[1]
         correct += pred.eq(target.data.view_as(pred)).cpu().sum()
     bin_op.restore()
-    acc = 100. * correct / len(testloader.dataset)
+
+    acc = 100. * correct.item() / len(testloader.dataset)
 
     if acc > best_acc:
         best_acc = acc
@@ -116,8 +117,8 @@ def test(epoch, model):
         save_state(model, best_acc, epoch)
 
     test_loss /= len(testloader.dataset)
-    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.2f}%)'.format(
-        test_loss * 128., correct, len(testloader.dataset),
+    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.4f}%)'.format(
+        test_loss * 128., correct.item(), len(testloader.dataset),
         100. * correct / len(testloader.dataset)))
     print('Best Accuracy: {:.2f}%\n'.format(best_acc))
     writer.add_scalar('vali_acc', acc, epoch)
@@ -204,13 +205,6 @@ if __name__ == '__main__':
             else:
                 para.requires_grad = False
 
-    # if args.initialnum:
-    #     for name,para in model.named_parameters():
-    #         para.requires_grad = False
-    #     for module in model.modules():
-    #         if isinstance(module, MainSubConv2d) and module.binact:
-    #             module.mask.requires_grad = True
-
     for name, para in model.named_parameters():
         print(name, para.requires_grad)
 
@@ -237,11 +231,10 @@ if __name__ == '__main__':
         tlr = adjust_learning_rate(optimizer, epoch)
         writer.add_scalar('learning_rate', tlr, epoch)
         train(epoch, model)
-
-        if args.layer:
-            prun_num = 0
-            for m in model.modules():
-                if isinstance(m, MainSubConv2d) and m.main_or_sub==True:
-                    prun_num += m.filtermask.eq(-1).sum().item()
-            writer.add_scalar('prunum', prun_num, epoch)
         test(epoch, model)
+
+        if args.layer and not args.main:
+            for m in model.modules():
+                if isinstance(m, MainSubConv2d) and m.main_or_sub==False:
+                    prun_num = m.filtermask.eq(-1).sum().item()
+            writer.add_scalar('prunum_layer{}'.format(args.layer), prun_num, epoch)
