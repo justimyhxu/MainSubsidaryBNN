@@ -39,7 +39,7 @@ Do 2,3 until the last layer was pruned. (**N** starts from 1.)
    python train.py --main --layer N --lr 1e-4 --pretrained $MODEL_PATH (the resulted subsidary component from step 2)$
    ~~~
 
->Alpha is a hyper-parameter to control pruning ratio, during our experiments we set it in [1e-7,1e-8,1e-9], generally we use 1e-8.
+>Alpha is a hyper-parameter to control pruning ratio. During our experiments, we set it in [1e-7, 1e-8, 1e-9]. Generally we use 1e-8.
 
 ## Citation
 If you use our code/model/data, please cite our paper:
