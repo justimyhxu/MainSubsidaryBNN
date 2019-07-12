@@ -51,18 +51,4 @@ If you use our code/model/data, please cite our paper:
 }
 ```
 
-## Usage
-#### File Structure
-```
-root
-|_ cuda
-  |_ binactive_cuda.cpp         #ToDo
-  |_ binactive_cuda_kernel.cu   #ToDo
-|_ data.py     #ToDo
-|_ maskoperator.py   #ToDo
-|_ maskresnet.py     #ToDo
-|_ train.py        #ToDo
-|_ util.py         #ToDo
-```
-#### How-To-Run
-ToDo
+

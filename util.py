@@ -24,7 +24,6 @@ class BinOp():
         index = -1
 
         for m in model.modules():
-            # if isinstance(m, nn.Conv2d) or isinstance(m,nin.MaskConv2d) or isinstance(m,nin.MaskPreConv2d) or isinstance(m,nin.MainSubConv2d) or isinstance(m,mask.MainSubConv2d) :
             if isinstance(m, nn.Conv2d) or isinstance(m, MainSubConv2d):
                 index = index + 1
                 if index in self.bin_range:
