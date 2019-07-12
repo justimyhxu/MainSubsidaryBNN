@@ -18,7 +18,7 @@ The code was tested with [Anaconda](https://www.anaconda.com/download) Python 3.
 
 ## Training 
 
-You will need 1x 12GB GPUs to reproduce our training. Because it is a layer-wise training process, it means we should training  N(N is the numbers of binary conv layers ) times to get a pruned model. 
+You will need 1x 12GB GPUs to reproduce our training. Because it is a layer-wise training process, it means we should train  N(N is the numbers of binary conv layers ) times to get a pruned model. 
 
 1. Prepare a normal binary model
 
