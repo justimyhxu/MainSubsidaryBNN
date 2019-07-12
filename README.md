@@ -18,7 +18,7 @@ The code was tested with [Anaconda](https://www.anaconda.com/download) Python 3.
 
 ## Training 
 
-You will need at least 1x 12GB GPUs to reproduce our result. As a layer-wise training method, it requires  N(N is the numbers of binary conv layers ) times  training to get the final pruned model. You can definitly implement the whole process into a for loop (especially for very deep networks like ResNet-101). However, to better illustrate the pipelien of our method, we explicitly show how to prune each layer here.
+You will need at least 1x 12GB GPUs to reproduce our result. As a layer-wise training method, it requires  N(N is the numbers of binary conv layers ) times  training to get the final pruned model. You can definitly implement the whole process into a for loop (especially for very deep networks like ResNet-101). However, to better illustrate the pipeline of our method, we explicitly show how to prune each layer here.
 
 1. Prepare a normal binary model
 
