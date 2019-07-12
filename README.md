@@ -26,7 +26,7 @@ You will need 1x 12GB GPUs to reproduce our training. Because it is a layer-wise
     python train.py --main --lr 1e-3
     ~~~
     
-Do 2,3 until the last layer was pruned.
+Do 2,3 until the last layer was pruned. alpha is a hyper-parameter to control pruning ratio, during our experiments we set it in [1e-7,1e-8,1e-9], generally we use 1e-8)
 
 2. Pruned the first I layer(Training subsidary component)
 
