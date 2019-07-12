@@ -1,8 +1,6 @@
 # A-Main-Subsidiary-Network-Framework-For-Simplifying-Binary-Neural-Network
 This repository is for the paper 'A Main Subsidiary Network Framework For Simplifying Binary Neural Network' (To appear in CVPR 2019) with Pytorch v0.40+.
 
-## Introduction
-
 ## Installation
 The code was tested with [Anaconda](https://www.anaconda.com/download) Python 3.6 and [PyTorch]((http://pytorch.org/)) v0.4.1. After install Anaconda:
 
@@ -27,6 +25,8 @@ You will need 1x 12GB GPUs to reproduce our training. Because it is a layer-wise
     ~~~
     python train.py --main --lr 1e-3
     ~~~
+    
+Do 2,3 until the last layer was pruned.
 
 2. Pruned the first I layer(Training subsidary component)
 
@@ -38,7 +38,7 @@ You will need 1x 12GB GPUs to reproduce our training. Because it is a layer-wise
    ~~~
    python train.py --main --layer I --lr 1e-4 --pretrained $MODEL_PATH(first I layer subsidary model path)$
    ~~~
-Do 2,3 until the last layer was pruned.
+
 
 ## Citation
 If you use our code/model/data, please cite our paper:
